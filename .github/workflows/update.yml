@@ -1,0 +1,43 @@
+name: Update stats
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [videos.json, scripts/update.mjs]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stats
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Refresh stats every minute for about 5 minutes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          stats="$RUNNER_TEMP/stats.json"
+          if git fetch -q --depth=1 origin data; then git show FETCH_HEAD:stats.json > "$stats"; else echo '{}' > "$stats"; fi
+          for i in 1 2 3 4 5; do
+            # Pick up videos added since this run started.
+            git fetch -q --depth=1 origin main && git checkout -q FETCH_HEAD -- videos.json
+            node scripts/update.mjs videos.json "$stats"
+            pub="$RUNNER_TEMP/pub"; rm -rf "$pub"; mkdir "$pub"; cp "$stats" "$pub/"
+            (cd "$pub" && git init -q -b data && git add stats.json \
+              && git -c user.name="stats-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "Update stats" \
+              && git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" data)
+            if [ "$i" -lt 5 ]; then sleep 55; fi
+          done

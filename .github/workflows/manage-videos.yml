@@ -1,0 +1,61 @@
+name: Add or remove a video
+
+# Open an issue titled "Add <YouTube link>" or "Remove <YouTube link>".
+# Only issues opened by the repo owner are acted on.
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: manage-videos
+  cancel-in-progress: false
+
+jobs:
+  manage:
+    if: github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update videos.json
+        id: edit
+        env:
+          TEXT: ${{ github.event.issue.title }} ${{ github.event.issue.body }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const text = process.env.TEXT || "";
+            const remove = /^\s*remove/i.test(process.env.TITLE || "");
+            const ids = [...text.matchAll(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/g)].map(m => m[1]);
+            const cfg = JSON.parse(fs.readFileSync("videos.json", "utf8"));
+            const have = new Set(cfg.videos.map(v => v.id));
+            const changed = [];
+            for (const id of new Set(ids)) {
+              if (remove && have.has(id)) { cfg.videos = cfg.videos.filter(v => v.id !== id); changed.push(id); }
+              if (!remove && !have.has(id)) { cfg.videos.push({ id, addedAt: new Date().toISOString() }); changed.push(id); }
+            }
+            fs.writeFileSync("videos.json", JSON.stringify(cfg, null, 2) + "\n");
+            const verb = remove ? "Removed" : "Added";
+            const msg = !ids.length ? "No YouTube link found in this issue, so nothing changed."
+              : changed.length ? `${verb} ${changed.join(", ")}. The tracker will show the change within a minute or two.`
+              : remove ? "That video was not being tracked." : "That video is already being tracked.";
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${changed.length}\nmsg=${msg}\n`);
+          '
+      - name: Commit and refresh stats
+        if: steps.edit.outputs.changed != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git -c user.name="stats-bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qam "Update tracked videos (#${{ github.event.issue.number }})"
+          git push -q
+          gh workflow run update.yml --ref main
+      - name: Reply and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MSG: ${{ steps.edit.outputs.msg }}
+        run: gh issue close ${{ github.event.issue.number }} --repo "${{ github.repository }}" --comment "$MSG"
